@@ -21,6 +21,31 @@
         display: grid;
         gap: 8px;
       }
+      .group {
+        border-radius: 10px;
+        padding: 10px;
+        display: grid;
+        gap: 8px;
+      }
+      .group-title {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        opacity: 0.9;
+      }
+      .single-group {
+        background: #101826;
+        border: 1px solid #1f2937;
+      }
+      .bulk-group {
+        background: #162033;
+        border: 1px solid #2a3a55;
+      }
+      .single-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
       button {
         border: none;
         border-radius: 8px;
@@ -29,13 +54,41 @@
         font-weight: 600;
         cursor: pointer;
       }
-      #exportCurrent {
+      #exportCurrentJson {
         background: #60a5fa;
+        color: #0b1020;
+      }
+      #exportCurrentMd {
+        background: #93c5fd;
         color: #0b1020;
       }
       #bulkExport {
         background: #34d399;
         color: #0b1020;
+      }
+      .bulk-options {
+        display: grid;
+        gap: 6px;
+        background: #111827;
+        border-radius: 8px;
+        padding: 10px;
+        font-size: 12px;
+      }
+      .bulk-options select,
+      .bulk-options input[type="checkbox"] {
+        accent-color: #34d399;
+      }
+      .bulk-options label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .bulk-options select {
+        background: #1f2937;
+        color: #e5e7eb;
+        border: 1px solid #374151;
+        border-radius: 6px;
+        padding: 6px 8px;
       }
       #status {
         margin-top: 12px;
@@ -51,8 +104,27 @@
   <body>
     <h1>Perplexity Chat Bulk Exporter</h1>
     <div class="actions">
-      <button id="exportCurrent">現在の対話を JSON ダウンロード</button>
-      <button id="bulkExport">複数スレッドを ZIP ダウンロード</button>
+      <div class="group single-group">
+        <div class="group-title">単体エクスポート</div>
+        <div class="single-actions">
+          <button id="exportCurrentJson">現在の対話を JSON</button>
+          <button id="exportCurrentMd">現在の対話を MD</button>
+        </div>
+      </div>
+      <div class="group bulk-group">
+        <div class="group-title">一括エクスポート</div>
+        <div class="bulk-options">
+          <label>
+            形式:
+            <select id="bulkFormat">
+              <option value="json">JSON</option>
+              <option value="md">MD</option>
+            </select>
+          </label>
+          <label><input type="checkbox" id="bulkCompress" checked /> 圧縮する（ZIP）</label>
+        </div>
+        <button id="bulkExport">複数スレッドをダウンロード</button>
+      </div>
     </div>
     <div id="status">準備完了</div>
     <script src="popup.js"></script>
