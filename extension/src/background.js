@@ -26,14 +26,104 @@ async function sendToTab(tabId, message) {
 }
 
 function sanitizeFileName(name) {
-  return name.replace(/[\\/:*?"<>|]+/g, "-").slice(0, 80) || "chat";
+  const WINDOWS_RESERVED = new Set([
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    "COM1",
+    "COM2",
+    "COM3",
+    "COM4",
+    "COM5",
+    "COM6",
+    "COM7",
+    "COM8",
+    "COM9",
+    "LPT1",
+    "LPT2",
+    "LPT3",
+    "LPT4",
+    "LPT5",
+    "LPT6",
+    "LPT7",
+    "LPT8",
+    "LPT9"
+  ]);
+
+  let value = (name || "").replace(/[\x00-\x1f\x7f]/g, " ");
+  value = value.replace(/[\\/:*?"<>|]+/g, "-");
+  value = value.replace(/\s+/g, " ").trim();
+  value = value.replace(/^\.+/, "").replace(/\.+$/, "");
+  value = value.replace(/[. ]+$/g, "");
+
+  if (!value) {
+    value = "chat";
+  }
+
+  if (WINDOWS_RESERVED.has(value.toUpperCase())) {
+    value = `${value}-file`;
+  }
+
+  return value.slice(0, 80) || "chat";
+}
+
+function buildExportFilename(baseName, extension) {
+  const base = sanitizeFileName(baseName);
+  return `${base}.${extension}`;
+}
+
+async function downloadWithFilenameFallback(options, fallbackExtension) {
+  try {
+    return await chrome.downloads.download(options);
+  } catch (error) {
+    const message = error?.message || "";
+    if (!message.includes("Invalid filename")) {
+      throw error;
+    }
+
+    const fallbackName = `chat-${Date.now()}.${fallbackExtension}`;
+    try {
+      return await chrome.downloads.download({
+        ...options,
+        filename: fallbackName
+      });
+    } catch (secondError) {
+      const fallbackFlatName = `chat-${Date.now()}.${fallbackExtension}`;
+      return chrome.downloads.download({
+        ...options,
+        filename: fallbackFlatName
+      });
+    }
+  }
 }
 
 function chatToMarkdown(chat) {
   const lines = [`# ${chat.title}`, "", `- URL: ${chat.url}`, `- ExportedAt: ${chat.exportedAt}`, ""];
 
+  const toBlockquote = (text) =>
+    (text || "")
+      .split("\n")
+      .map((line) => `> ${line}`)
+      .join("\n");
+
   for (const message of chat.messages) {
-    lines.push(`## ${message.role}`);
+    if (message.role === "user") {
+      lines.push(`> [!question] User`);
+      if (typeof message.turnIndex === "number") {
+        lines.push(`> - turnIndex: ${message.turnIndex}`);
+      }
+      if (message.timestamp) {
+        lines.push(`> - timestamp: ${message.timestamp}`);
+      }
+      lines.push(">", toBlockquote(message.text), "");
+      continue;
+    }
+
+    lines.push("## assistant");
+    if (typeof message.turnIndex === "number") {
+      lines.push(`- turnIndex: ${message.turnIndex}`);
+    }
     if (message.timestamp) {
       lines.push(`- timestamp: ${message.timestamp}`);
     }
@@ -71,7 +161,37 @@ function uint32LE(value) {
   return [value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff];
 }
 
-function createZipBlob(files) {
+function concatUint8Arrays(chunks) {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return merged;
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const sub = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...sub);
+  }
+  return btoa(binary);
+}
+
+function textToDataUrl(text, mimeType) {
+  const bytes = new TextEncoder().encode(text);
+  return `data:${mimeType};base64,${bytesToBase64(bytes)}`;
+}
+
+function bytesToDataUrl(bytes, mimeType) {
+  return `data:${mimeType};base64,${bytesToBase64(bytes)}`;
+}
+
+function createZipBytes(files) {
   const encoder = new TextEncoder();
   const localChunks = [];
   const centralChunks = [];
@@ -135,7 +255,7 @@ function createZipBlob(files) {
     ...uint16LE(0)
   ]);
 
-  return new Blob([...localChunks, ...centralChunks, endRecord], { type: "application/zip" });
+  return concatUint8Arrays([...localChunks, ...centralChunks, endRecord]);
 }
 
 async function extractFromUrl(url) {
@@ -157,30 +277,53 @@ async function extractFromUrl(url) {
   }
 }
 
-async function exportCurrentChat() {
+function normalizeSingleFormat(format) {
+  return format === "md" ? "md" : "json";
+}
+
+function normalizeBulkOptions(options) {
+  return {
+    format: normalizeSingleFormat(options?.format),
+    compress: options?.compress !== false
+  };
+}
+
+async function exportCurrentChat(format) {
+  const singleFormat = normalizeSingleFormat(format);
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   ensurePerplexityTab(tab);
 
   const result = await sendToTab(tab.id, { type: "EXPORT_CURRENT_CHAT" });
   if (!result?.ok) {
-    throw new Error(result?.error?.message || "現在のチャット取得に失敗しました。");
+    const base = result?.error?.message || "現在のチャット取得に失敗しました。";
+    const diagnostics = result?.error?.diagnostics ? ` diagnostics=${JSON.stringify(result.error.diagnostics)}` : "";
+    throw new Error(`${base}${diagnostics}`);
   }
 
   const chat = result.data;
-  const fileBase = sanitizeFileName(chat.title);
-  const jsonBlob = new Blob([JSON.stringify(chat, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(jsonBlob);
+  const isMd = singleFormat === "md";
+  const content = isMd ? chatToMarkdown(chat) : JSON.stringify(chat, null, 2);
+  const mimeType = isMd ? "text/markdown;charset=utf-8" : "application/json;charset=utf-8";
+  const extension = isMd ? "md" : "json";
 
-  await chrome.downloads.download({
-    url,
-    filename: `perplexity-export/${fileBase}.json`,
-    saveAs: true
-  });
+  await downloadWithFilenameFallback(
+    {
+      url: textToDataUrl(content, mimeType),
+      filename: buildExportFilename(chat.title, extension),
+      saveAs: false,
+      conflictAction: "uniquify"
+    },
+    extension
+  );
 
-  sendResult({ ok: true, mode: "single", message: "現在のチャットをダウンロードしました。" });
+  const label = isMd ? "Markdown" : "JSON";
+  sendResult({ ok: true, mode: "single", format: singleFormat, message: `現在のチャットを ${label} でダウンロードしました。` });
 }
 
-async function exportBulkChats() {
+async function exportBulkChats(options) {
+  const bulkOptions = normalizeBulkOptions(options);
+  const isMd = bulkOptions.format === "md";
+  const extension = isMd ? "md" : "json";
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
   ensurePerplexityTab(activeTab);
 
@@ -214,43 +357,73 @@ async function exportBulkChats() {
   const files = [];
   for (const chat of chats) {
     const base = sanitizeFileName(chat.title);
+    const content = isMd ? chatToMarkdown(chat) : JSON.stringify(chat, null, 2);
     files.push({
-      name: `${base}.json`,
-      content: JSON.stringify(chat, null, 2)
-    });
-    files.push({
-      name: `${base}.md`,
-      content: chatToMarkdown(chat)
+      name: `${base}.${extension}`,
+      content
     });
   }
 
-  files.push({
-    name: "summary.json",
-    content: JSON.stringify(
+  const summary = {
+    exportedAt: new Date().toISOString(),
+    format: bulkOptions.format,
+    compressed: bulkOptions.compress,
+    successCount: chats.length,
+    failureCount: failures.length,
+    failures
+  };
+
+  if (bulkOptions.compress) {
+    files.push({
+      name: "summary.json",
+      content: JSON.stringify(summary, null, 2)
+    });
+
+    const zipBytes = createZipBytes(files);
+    const zipDataUrl = bytesToDataUrl(zipBytes, "application/zip");
+
+    await downloadWithFilenameFallback(
       {
-        exportedAt: new Date().toISOString(),
-        successCount: chats.length,
-        failureCount: failures.length,
-        failures
+        url: zipDataUrl,
+        filename: `perplexity-bulk-${bulkOptions.format}-${Date.now()}.zip`,
+        saveAs: false,
+        conflictAction: "uniquify"
       },
-      null,
-      2
-    )
-  });
+      "zip"
+    );
+  } else {
+    const batchId = Date.now();
+    for (const file of files) {
+      await downloadWithFilenameFallback(
+        {
+          url: textToDataUrl(file.content, isMd ? "text/markdown;charset=utf-8" : "application/json;charset=utf-8"),
+          filename: `perplexity-${bulkOptions.format}-${batchId}-${file.name}`,
+          saveAs: false,
+          conflictAction: "uniquify"
+        },
+        extension
+      );
+    }
 
-  const zipBlob = createZipBlob(files);
-  const zipUrl = URL.createObjectURL(zipBlob);
-
-  await chrome.downloads.download({
-    url: zipUrl,
-    filename: `perplexity-export/perplexity-bulk-${Date.now()}.zip`,
-    saveAs: true
-  });
+    await downloadWithFilenameFallback(
+      {
+        url: textToDataUrl(JSON.stringify(summary, null, 2), "application/json;charset=utf-8"),
+        filename: `perplexity-${bulkOptions.format}-${batchId}-summary.json`,
+        saveAs: false,
+        conflictAction: "uniquify"
+      },
+      "json"
+    );
+  }
 
   sendResult({
     ok: true,
     mode: "bulk",
-    message: `完了: ${chats.length}件成功 / ${failures.length}件失敗`,
+    format: bulkOptions.format,
+    compressed: bulkOptions.compress,
+    message: `完了: ${chats.length}件成功 / ${failures.length}件失敗 (${bulkOptions.format.toUpperCase()}${
+      bulkOptions.compress ? " / ZIP" : " / 非圧縮"
+    })`,
     successCount: chats.length,
     failureCount: failures.length
   });
@@ -258,7 +431,7 @@ async function exportBulkChats() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "START_EXPORT_CURRENT") {
-    exportCurrentChat()
+    exportCurrentChat(message?.format)
       .then(() => sendResponse({ ok: true }))
       .catch((error) => {
         sendResult({ ok: false, message: error.message });
@@ -268,7 +441,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "START_BULK_EXPORT") {
-    exportBulkChats()
+    exportBulkChats({ format: message?.format, compress: message?.compress })
       .then(() => sendResponse({ ok: true }))
       .catch((error) => {
         sendResult({ ok: false, message: error.message });
