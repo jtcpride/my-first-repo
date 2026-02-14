@@ -68,9 +68,34 @@ function sanitizeFileName(name) {
   return value.slice(0, 80) || "chat";
 }
 
-function buildExportFilename(baseName, extension) {
-  const base = sanitizeFileName(baseName);
-  return `${base}.${extension}`;
+function hashString(value) {
+  let hash = 0x811c9dc5;
+  const text = String(value || "");
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+function formatTimestampForFile(isoString) {
+  const d = isoString ? new Date(isoString) : new Date();
+  const date = Number.isNaN(d.getTime()) ? new Date() : d;
+  const pad = (n, width = 2) => String(n).padStart(width, "0");
+  return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}-${pad(date.getUTCHours())}${pad(
+    date.getUTCMinutes()
+  )}${pad(date.getUTCSeconds())}-${pad(date.getUTCMilliseconds(), 3)}`;
+}
+
+function buildChatFileStem(chat) {
+  const timestamp = formatTimestampForFile(chat?.exportedAt);
+  const urlHash = hashString(chat?.url || "");
+  const title = sanitizeFileName(chat?.title || "chat").slice(0, 40);
+  return `${timestamp}-${urlHash}-${title}`;
+}
+
+function buildExportFilenameFromChat(chat, extension) {
+  return `${buildChatFileStem(chat)}.${extension}`;
 }
 
 async function downloadWithFilenameFallback(options, fallbackExtension) {
@@ -309,7 +334,7 @@ async function exportCurrentChat(format) {
   await downloadWithFilenameFallback(
     {
       url: textToDataUrl(content, mimeType),
-      filename: buildExportFilename(chat.title, extension),
+      filename: buildExportFilenameFromChat(chat, extension),
       saveAs: false,
       conflictAction: "uniquify"
     },
@@ -356,10 +381,9 @@ async function exportBulkChats(options) {
 
   const files = [];
   for (const chat of chats) {
-    const base = sanitizeFileName(chat.title);
     const content = isMd ? chatToMarkdown(chat) : JSON.stringify(chat, null, 2);
     files.push({
-      name: `${base}.${extension}`,
+      name: buildExportFilenameFromChat(chat, extension),
       content
     });
   }
@@ -397,7 +421,7 @@ async function exportBulkChats(options) {
       await downloadWithFilenameFallback(
         {
           url: textToDataUrl(file.content, isMd ? "text/markdown;charset=utf-8" : "application/json;charset=utf-8"),
-          filename: `perplexity-${bulkOptions.format}-${batchId}-${file.name}`,
+          filename: file.name,
           saveAs: false,
           conflictAction: "uniquify"
         },

@@ -8,6 +8,10 @@ Perplexity の対話ログを Chrome / Edge 拡張（Manifest V3）でエクス�
 
 外部送信はせず、ローカルのダウンロードに保存します。
 
+> [!warning]
+> この拡張は **Perplexity公式の提供物ではない非公式ツール** です。
+> Perplexity 側の UI / DOM 変更により、抽出ロジックが将来的に動作しなくなる可能性があります。
+
 ## 現在の主な機能
 - 単体対話のダウンロード（JSON / MD）
 - 複数スレッドの一括ダウンロード
@@ -131,6 +135,13 @@ Perplexity の対話ログを Chrome / Edge 拡張（Manifest V3）でエクス�
 - この拡張は絶対パスを使わず、相対ファイル名で保存します
 - `chrome.downloads.download` を使用しており、Chrome / Edge（Chromium系）で同様に動作します
 
+## ファイル命名規則
+- 単体 / 一括とも、スレッドファイルは次の形式で保存されます
+  - `<UTC実施日時>-<URLハッシュ8桁>-<タイトル>.json`
+  - `<UTC実施日時>-<URLハッシュ8桁>-<タイトル>.md`
+- 例: `20260214-093015-128-1a2b3c4d-週末の作業計画.md`
+- `UTC実施日時` と `URLハッシュ` を含めるため、同じダウンロード先で繰り返し使っても衝突しにくい設計です
+
 ## エラー時の確認ポイント
 - `Perplexityページを開いたタブで実行してください。`
   - Perplexity 以外のタブで実行している
@@ -150,3 +161,6 @@ Perplexity の対話ログを Chrome / Edge 拡張（Manifest V3）でエクス�
 - `extension/src/popup.js`: UIイベント処理
 - `extension/src/content.js`: ページから会話データ抽出
 - `extension/src/background.js`: エクスポート制御・ダウンロード処理
+
+## ライセンス
+このプロジェクトは [MIT License](./LICENSE) で公開しています。
